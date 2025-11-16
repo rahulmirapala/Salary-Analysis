@@ -12,6 +12,7 @@ import plotly
 import plotly.graph_objects as go
 import json
 from mlxtend.frequent_patterns import apriori, association_rules
+import math  # <-- FIX 1: Added missing import for 'math.isnan' in association_rules_view
 
 app = Flask(__name__)
 dataset = None
@@ -22,6 +23,10 @@ selected_features = None
 label_encoders = {}
 unique_values = {}
 a = 'kkk'
+# Global variables for prediction model persistence
+X_train, X_test, y_train, y_test = None, None, None, None
+selected_model_type = None
+
 @app.route('/')
 def home():
     return render_template('home.html')
@@ -37,9 +42,9 @@ def load_data():
     dataset = pd.read_csv(file)
     for column in dataset.columns:
         if dataset[column].dtype == 'object':
-           dataset[column].fillna(dataset[column].mode()[0]) 
+            dataset[column].fillna(dataset[column].mode()[0], inplace=True) 
         else:
-           dataset[column].fillna(dataset[column].mean()) 
+            dataset[column].fillna(dataset[column].mean(), inplace=True) 
 
     for column in dataset.columns:
         if len(np.unique(dataset[column])) > 300:
@@ -180,11 +185,11 @@ def casestudy():
                     color=skill_column_y,
                     barmode='group',
                     labels={
-                                skill_column_x: f"Skill: {skill_column_x}",
-                                skill_column_y: f"Skill: {skill_column_y}",
-                                numerical_feature: f"Mean {numerical_feature}"
-                            }    
-                     )
+                            skill_column_x: f"Skill: {skill_column_x}",
+                            skill_column_y: f"Skill: {skill_column_y}",
+                            numerical_feature: f"Mean {numerical_feature}"
+                        }    
+                    )
                 fig.update_layout(
                         title=f'Distribution of {numerical_feature} across {skill_column_x} and {skill_column_y}',
                         xaxis_title=f'{skill_column_x} (Skill)',
@@ -194,8 +199,8 @@ def casestudy():
             
             elif len(categorical_features_selected) == 2 and not skill_columns_selected and len(numerical_features_selected) == 1:
                 categorical_group = dataset.groupby(categorical_features_selected)
-               
-                grouped_data = categorical_group[numerical_features_selected].mean().reset_index()
+                
+                grouped_data = categorical_group[numerical_features_selected[0]].mean().reset_index()
                 
                 fig = px.bar(
                     grouped_data,
@@ -296,10 +301,10 @@ def casestudy():
 
                 
                 return render_template('casestudy.html', 
-                                    error_message=error_message,
-                                    categorical_features=categorical_features, 
-                                    numerical_features=numerical_features,
-                                    skill_columns=skill_columns)
+                                        error_message=error_message,
+                                        categorical_features=categorical_features, 
+                                        numerical_features=numerical_features,
+                                        skill_columns=skill_columns)
 
         elif graph_type == 'pie':
             if len(categorical_features_selected) == 1 and not numerical_features_selected and not skill_columns_selected:
@@ -342,7 +347,7 @@ def casestudy():
                     values=numerical_feature,  
                     title=f'Distribution of {numerical_feature} across {categorical_feature}'
                 )
-       
+    
             else:
                 error_message = (
                         "Please select the correct combination of features for the pie chart.<br> "
@@ -354,10 +359,10 @@ def casestudy():
                         "Make sure you don't mix multiple categories or skills with incompatible options.")
                 
                 return render_template('casestudy.html', 
-                                    error_message=error_message,
-                                    categorical_features=categorical_features, 
-                                    numerical_features=numerical_features,
-                                    skill_columns=skill_columns)
+                                        error_message=error_message,
+                                        categorical_features=categorical_features, 
+                                        numerical_features=numerical_features,
+                                        skill_columns=skill_columns)
 
         elif graph_type == 'box' :
             if  len(selected_features) == 1 and not categorical_features_selected:
@@ -408,10 +413,10 @@ def casestudy():
                         "Make sure you don't mix multiple categories or skills with incompatible options.")
                 
                 return render_template('casestudy.html', 
-                                    error_message=error_message,
-                                    categorical_features=categorical_features, 
-                                    numerical_features=numerical_features,
-                                    skill_columns=skill_columns)
+                                        error_message=error_message,
+                                        categorical_features=categorical_features, 
+                                        numerical_features=numerical_features,
+                                        skill_columns=skill_columns)
 
 
         elif graph_type == 'histogram' :
@@ -424,10 +429,10 @@ def casestudy():
                         "You can only select a single numerical feature or skill column.<br> ")
                 
                 return render_template('casestudy.html', 
-                                    error_message=error_message,
-                                    categorical_features=categorical_features, 
-                                    numerical_features=numerical_features,
-                                    skill_columns=skill_columns)
+                                        error_message=error_message,
+                                        categorical_features=categorical_features, 
+                                        numerical_features=numerical_features,
+                                        skill_columns=skill_columns)
 
         elif graph_type == 'scatter':
             if len(numerical_features_selected) == 2 and not categorical_features_selected and not skill_columns_selected:
@@ -435,7 +440,6 @@ def casestudy():
                 x_feature = numerical_features_selected[0]
                 y_feature = numerical_features_selected[1]
                 
-
                 fig = px.scatter(
                     dataset,
                     x=x_feature,
@@ -467,9 +471,12 @@ def casestudy():
                 )
 
             else:
+                # FIX 4: Corrected error message to be accurate
                 error_message = (
-                    "Please select exactly two numerical features for the scatter plot.<br>"
-                    "Scatter plots require two numerical features for the x and y axes."
+                    "Please select the correct combination of features for the scatter plot.<br>"
+                    "You can choose one of the following options:<br>"
+                    "1. Two numerical features.<br>"
+                    "2. One numerical feature and one skill feature.<br>"
                 )
                 return render_template(
                     'casestudy.html',
@@ -480,20 +487,21 @@ def casestudy():
                 )
 
         if fig:
-            graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
-            return render_template('casestudy.html', graphJSON=graphJSON, 
-                                   categorical_features=categorical_features, 
-                                   numerical_features=numerical_features,
-                                   skill_columns=skill_columns)
+            # FIX 2: Changed include_plotlyjs=False to 'cdn' to load JavaScript
+            fig_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
+            return render_template('casestudy.html', fig_html=fig_html,
+                                    categorical_features=categorical_features,
+                                    numerical_features=numerical_features,
+                                    skill_columns=skill_columns)
 
     return render_template('casestudy.html', 
-                           categorical_features=categorical_features, 
-                           numerical_features=numerical_features, 
-                           skill_columns=skill_columns)
+                            categorical_features=categorical_features, 
+                            numerical_features=numerical_features, 
+                            skill_columns=skill_columns)
 
 @app.route('/prediction', methods=['GET', 'POST'])
 def prediction():
-    global model, selected_features, dataset_prediction, label_encoders, unique_values, prediction_result, X_train, X_test, y_train, y_test
+    global model, selected_features, dataset_prediction, label_encoders, unique_values, prediction_result, X_train, X_test, y_train, y_test, selected_model_type
 
     if request.method == 'POST':
         if 'select_target' in request.form:
@@ -501,11 +509,11 @@ def prediction():
 
             if not target_feature:
                 return render_template('prediction.html', 
-                                       target_feature=None, 
-                                       correlation_table=None, 
-                                       features=None, 
-                                       trained=False, 
-                                       error="Please select a target variable.")
+                                        target_feature=None, 
+                                        correlation_table=None, 
+                                        features=None, 
+                                        trained=False, 
+                                        error="Please select a target variable.")
 
             label_encoders = {}
             dataset_encoded = dataset_prediction.copy()
@@ -519,16 +527,23 @@ def prediction():
                     unique_values[feature] = le.classes_.tolist()
 
             numerical_features = dataset_encoded.select_dtypes(include=np.number).columns.tolist()
+            if target_feature not in numerical_features:
+                 return render_template('prediction.html', 
+                                        target_feature=None, 
+                                        features=dataset_prediction.select_dtypes(include=np.number).columns.tolist(), 
+                                        trained=False, 
+                                        error="Target variable must be numerical or a categorical variable that can be encoded.")
+
             correlation_table = dataset_encoded[numerical_features].corr()[[target_feature]].sort_values(by=target_feature, ascending=False).round(2)
             correlation_table = correlation_table.drop(target_feature)
             
             features = [f for f in numerical_features]
 
             return render_template('prediction.html', 
-                                   target_feature=target_feature, 
-                                   correlation_table=correlation_table, 
-                                   features=features, 
-                                   trained=False)
+                                    target_feature=target_feature, 
+                                    correlation_table=correlation_table.to_html(classes='table table-striped'), 
+                                    features=features, 
+                                    trained=False)
 
         elif 'train' in request.form:
             selected_features = request.form.getlist('features')
@@ -536,11 +551,11 @@ def prediction():
 
             if not selected_features or not target_feature:
                 return render_template('prediction.html', 
-                                       target_feature=target_feature, 
-                                       correlation_table=None, 
-                                       features=dataset_prediction.columns, 
-                                       trained=False, 
-                                       error="Please select features and a target for training.")
+                                        target_feature=target_feature, 
+                                        correlation_table=None, 
+                                        features=dataset_prediction.columns, 
+                                        trained=False, 
+                                        error="Please select features and a target for training.")
 
             dataset_processed = dataset_prediction.copy()
             for feature in dataset_processed.columns:
@@ -573,7 +588,8 @@ def prediction():
                 xaxis_title="Model",
                 yaxis_title="Mean Squared Error"
             )
-            mse_div = mse_graph.to_html(full_html=False)
+            # FIX 3: Changed to 'cdn'
+            mse_div = mse_graph.to_html(full_html=False, include_plotlyjs='cdn')
 
             r2_graph = go.Figure(data=[go.Bar(x=list(r2_values.keys()), y=list(r2_values.values()),marker_color='rgba(204, 153, 255, 0.8)')])
             r2_graph.update_layout(
@@ -581,36 +597,43 @@ def prediction():
                 xaxis_title="Model",
                 yaxis_title="R² Score"
             )
-            r2_div = r2_graph.to_html(full_html=False)
+            # FIX 3: Changed to 'cdn'
+            r2_div = r2_graph.to_html(full_html=False, include_plotlyjs='cdn')
 
             return render_template('prediction.html', 
-                                mse_graph=mse_div, 
-                                r2_graph=r2_div, 
-                                target_feature=target_feature, 
-                                trained=True, 
-                                selected_features=selected_features, 
-                                features=dataset_prediction.columns, 
-                                unique_values=unique_values)
+                                    mse_graph=mse_div, 
+                                    r2_graph=r2_div, 
+                                    target_feature=target_feature, 
+                                    trained=True, 
+                                    selected_features=selected_features, 
+                                    features=dataset_prediction.columns, 
+                                    unique_values=unique_values)
 
         elif 'model_selection' in request.form:
-            selected_model = request.form['model_selection']
-
-            global selected_model_type
-            selected_model_type = selected_model
-
+            selected_model_type = request.form['model_selection']
+            model = None # Reset model so it retrains on new selection
             return redirect(url_for('prediction_input'))
 
     numerical_features = dataset_prediction.select_dtypes(include=np.number).columns.tolist()
     return render_template('prediction.html', 
-                           target_feature=None, 
-                           features=numerical_features, 
-                           trained=False)
+                            target_feature=None, 
+                            features=numerical_features, 
+                            trained=False)
 
 @app.route('/prediction_input', methods=['GET', 'POST'])
 def prediction_input():
     global selected_model_type, model, selected_features, label_encoders, unique_values, X_train, y_train, X_test, y_test
 
-    if not model:
+    if not selected_model_type or X_train is None:
+        return redirect(url_for('prediction'))
+
+    # Initialize or re-initialize model only if it's not set or type changed
+    if not model or not isinstance(model, {
+        'Linear Regression': LinearRegression,
+        'Ridge Regression': Ridge,
+        'SVR': SVR,
+        'Random Forest': RandomForestRegressor
+    }.get(selected_model_type)):
         if selected_model_type == 'Linear Regression':
             model = LinearRegression()
         elif selected_model_type == 'Ridge Regression':
@@ -619,9 +642,11 @@ def prediction_input():
             model = SVR()
         elif selected_model_type == 'Random Forest':
             model = RandomForestRegressor()
-
-    
-    model.fit(X_train, y_train)
+        
+        if X_train is not None and y_train is not None:
+            model.fit(X_train, y_train)
+        else:
+             return redirect(url_for('prediction')) # Can't fit, go back
 
     scatter_plot_div = None 
 
@@ -634,9 +659,9 @@ def prediction_input():
                 input_value = request.form.get(feature)
                 if input_value not in unique_values[feature]:
                     return render_template('prediction_input.html', 
-                                           prediction=None, 
-                                           scatter_plot=scatter_plot_div,
-                                           error=f"Invalid input for {feature}")
+                                            prediction=None, 
+                                            scatter_plot=scatter_plot_div,
+                                            error=f"Invalid input for {feature}")
                 encoded_value = label_encoders[feature].transform([input_value])[0]
                 input_data.append(encoded_value)
             else:
@@ -644,9 +669,9 @@ def prediction_input():
                     input_data.append(float(request.form[feature]))
                 except ValueError:
                     return render_template('prediction_input.html', 
-                                           prediction=None, 
-                                           scatter_plot=scatter_plot_div,
-                                           error=f"Invalid input for {feature}")
+                                            prediction=None, 
+                                            scatter_plot=scatter_plot_div,
+                                            error=f"Invalid input for {feature}")
 
         input_df = pd.DataFrame([input_data], columns=selected_features)
 
@@ -671,9 +696,10 @@ def prediction_input():
             xaxis_title="Actual Values",
             yaxis_title="Predicted Values"
         )
-        scatter_plot_div = scatter_plot.to_html(full_html=False)
+        # FIX 3: Changed to 'cdn'
+        scatter_plot_div = scatter_plot.to_html(full_html=False, include_plotlyjs='cdn')
 
-        return redirect(url_for('prediction_result', prediction=prediction_result))
+        return render_template('prediction_result.html', prediction=prediction_result, scatter_plot=scatter_plot_div)
 
     if X_test is not None and y_test is not None:
         y_pred_test = model.predict(X_test)
@@ -695,20 +721,24 @@ def prediction_input():
             xaxis_title="Actual Values",
             yaxis_title="Predicted Values"
         )
-        scatter_plot_div = scatter_plot.to_html(full_html=False)
+        # FIX 3: Changed to 'cdn'
+        scatter_plot_div = scatter_plot.to_html(full_html=False, include_plotlyjs='cdn')
 
     return render_template('prediction_input.html', 
-                           selected_features=selected_features, 
-                           unique_values=unique_values, 
-                           scatter_plot=scatter_plot_div)
+                            selected_features=selected_features, 
+                            unique_values=unique_values, 
+                            scatter_plot=scatter_plot_div)
 
 @app.route('/prediction_result', methods=['GET'])
 def prediction_result():
     prediction_result = request.args.get('prediction', None)
+    scatter_plot_div = request.args.get('scatter_plot', None) # Note: This won't pass the plot, just showing result
 
     if prediction_result is None:
         return redirect(url_for('prediction_input'))  
 
+    # Re-generate scatter plot if needed, or pass from prediction_input
+    # For simplicity, just showing the result. The POST to prediction_input already shows the plot.
     return render_template('prediction_result.html', prediction=prediction_result)
 
 
@@ -726,6 +756,8 @@ def association_rules_view():
     for col in dataset_rules.columns:
         if col.lower() in special_r_columns:
             skill_columns.append(col)
+    
+    skill_columns = list(set(skill_columns)) # Ensure unique skills
 
     skill_data = dataset_rules[skill_columns].fillna(0)
     for col in skill_data.columns:
@@ -741,9 +773,8 @@ def association_rules_view():
             return render_template('association_rules.html', rules=None, unique_values=unique_values, error="No frequent skill combinations found in the data. Try selecting different skills or uploading a different dataset.", selected_skills=selected_skills)
         return render_template('association_rules.html', rules=None, unique_values=unique_values, error="No frequent skill combinations found in the data. Try selecting different skills or uploading a different dataset.")
 
-    rules = association_rules(frequent_itemsets, metric="lift", min_threshold=0.2, num_itemsets=10)
+    rules = association_rules(frequent_itemsets, metric="lift", min_threshold=0.2) # Removed num_itemsets, let it find all
 
-    # --- Enhancement: Add expected salary for each rule's antecedents ---
     # Try to find a salary column
     salary_col = None
     for col in dataset_rules.columns:
@@ -762,11 +793,6 @@ def association_rules_view():
         selected_skills_set = set(selected_skills)
 
         # Calculate current salary for selected skills
-        salary_col = None
-        for col in dataset_rules.columns:
-            if 'salary' in col.lower():
-                salary_col = col
-                break
         current_salary = None
         if salary_col:
             mask = np.ones(len(dataset_rules), dtype=bool)
@@ -777,34 +803,29 @@ def association_rules_view():
             if not filtered.empty:
                 current_salary = round(filtered[salary_col].mean(), 2)
 
-        # Suggest salary boost for top 3 unique consequent combinations in rules with highest expected salary
+        # Suggest salary boost for top 3 unique consequent combinations
         boost_candidates = []
         rules_records = rules.to_dict(orient="records")
         for rule in rules_records:
-            antecedents = rule['antecedents']
-            consequents = rule['consequents']
-            # If antecedents/consequents are frozenset, convert to list
-            if isinstance(antecedents, (set, frozenset)):
-                antecedents_list = list(antecedents)
-            else:
-                antecedents_list = antecedents
-            if isinstance(consequents, (set, frozenset)):
-                consequents_list = list(consequents)
-            else:
-                consequents_list = consequents
+            antecedents = set(rule['antecedents'])
+            consequents = set(rule['consequents'])
 
-            # Only consider rules where all antecedents are in selected_skills and at least one consequent is not
-            if not set(antecedents_list).issubset(selected_skills_set):
+            # Only consider rules where all antecedents are in selected_skills
+            if not antecedents.issubset(selected_skills_set):
                 continue
-            new_skills = [s for s in consequents_list if s not in selected_skills]
+            
+            # Find new skills (consequents not already in selected_skills)
+            new_skills = consequents - selected_skills_set
             if not new_skills:
                 continue
 
-            # Calculate expected salary for full combination (antecedents + consequents)
+            # Calculate expected salary for full combination
             expected_salary = None
-            if salary_col and (len(antecedents_list) + len(consequents_list)) > 0:
+            all_skills_rule = list(antecedents.union(consequents))
+            
+            if salary_col and all_skills_rule:
                 mask = np.ones(len(dataset_rules), dtype=bool)
-                for skill in list(antecedents_list) + list(consequents_list):
+                for skill in all_skills_rule:
                     if skill in dataset_rules.columns:
                         mask &= (dataset_rules[skill] == 1)
                 filtered = dataset_rules[mask]
@@ -813,85 +834,69 @@ def association_rules_view():
 
             if expected_salary is not None and current_salary is not None and expected_salary > current_salary:
                 boost_candidates.append({
-                    'consequents': consequents_list,
+                    'consequents': list(new_skills), # Show only the new skills to learn
                     'new_salary': expected_salary,
                     'boost': round(expected_salary - current_salary, 2)
                 })
 
-        # Remove duplicates by consequent combination (as tuple), keep highest new_salary per combination
+        # Remove duplicates by consequent combination, keep highest new_salary
         boost_dict = {}
         for b in boost_candidates:
-            # Clean and validate consequents before creating the key
             valid_skills = []
             for skill in b['consequents']:
                 if skill is None or (isinstance(skill, float) and (math.isnan(skill) or skill == 0.0)):
                     continue
                 skill_str = str(skill).strip()
                 if skill_str and skill_str.lower() != 'nan' and skill_str != '0':
-                    # Remove _yn suffix if present
                     if skill_str.endswith('_yn'):
                         skill_str = skill_str[:-3]
                     valid_skills.append(skill_str)
             
-            if valid_skills:  # Only process if we have valid skills
+            if valid_skills: 
                 key = tuple(sorted(valid_skills))
                 if key not in boost_dict or b['new_salary'] > boost_dict[key]['new_salary']:
                     new_boost = b.copy()
                     new_boost['consequents'] = valid_skills
                     new_boost['skills_str'] = ', '.join(valid_skills)
-                    new_boost['skill'] = new_boost['skills_str']  # For template display
+                    new_boost['skill'] = new_boost['skills_str'] # For template display
                     boost_dict[key] = new_boost
 
-        # Create final sorted list
         boost_list = [b for b in boost_dict.values() if b.get('skills_str')]
         boost_list.sort(key=lambda x: x['new_salary'], reverse=True)
-        skill_boosts = boost_list[:3]  # Get top 3 boosts
+        skill_boosts = boost_list[:3] # Get top 3 boosts
 
-        # Only show rules that are relevant to the selected skills (antecedents subset of selected_skills)
+        # Filter rules to show only those relevant to selected skills
         rules_data = []
-        rules_records = rules.to_dict(orient="records")
         for rule in rules_records:
-            antecedents = rule['antecedents']
-            consequents = rule['consequents']
-            # If antecedents/consequents are frozenset, convert to list
-            if isinstance(antecedents, (set, frozenset)):
-                antecedents_list = list(antecedents)
-            else:
-                antecedents_list = antecedents
-            if isinstance(consequents, (set, frozenset)):
-                consequents_list = list(consequents)
-            else:
-                consequents_list = consequents
+            antecedents = set(rule['antecedents'])
+            consequents = set(rule['consequents'])
 
-            # Only show rules where all antecedents are in selected_skills
-            if not set(antecedents_list).issubset(selected_skills_set):
+            if not antecedents.issubset(selected_skills_set):
                 continue
 
             expected_salary = None
-            if salary_col and (len(antecedents_list) + len(consequents_list)) > 0:
-                # Filter dataset for rows where all skills in antecedents AND consequents are present (==1)
+            all_skills_rule = list(antecedents.union(consequents))
+            if salary_col and all_skills_rule:
                 mask = np.ones(len(dataset_rules), dtype=bool)
-                for skill in list(antecedents_list) + list(consequents_list):
+                for skill in all_skills_rule:
                     if skill in dataset_rules.columns:
                         mask &= (dataset_rules[skill] == 1)
                 filtered = dataset_rules[mask]
                 if not filtered.empty:
                     expected_salary = round(filtered[salary_col].mean(), 2)
 
-            rule['expected_salary'] = expected_salary
-            # Convert antecedents/consequents to list for JSON serialization
-            if isinstance(rule['antecedents'], (set, frozenset)):
-                rule['antecedents'] = list(rule['antecedents'])
-            if isinstance(rule['consequents'], (set, frozenset)):
-                rule['consequents'] = list(rule['consequents'])
-            rules_data.append(rule)
+            rule_display = rule.copy()
+            rule_display['expected_salary'] = expected_salary
+            rule_display['antecedents'] = list(antecedents)
+            rule_display['consequents'] = list(consequents)
+            rules_data.append(rule_display)
 
-        # Sort rules_data by expected_salary descending (highest salary first)
+        # Sort rules_data by expected_salary descending
         rules_data.sort(key=lambda x: (x['expected_salary'] if x['expected_salary'] is not None else -float('inf')), reverse=True)
 
         return render_template('association_rules.html', rules=rules_data, unique_values=unique_values, selected_skills=selected_skills, skill_boosts=skill_boosts, current_salary=current_salary)
 
-    # On GET, only show the skills selection form, no rules
+    # On GET, only show the skills selection form
     return render_template('association_rules.html', rules=None, unique_values=unique_values, selected_skills=[])
 
 if __name__ == "__main__":
